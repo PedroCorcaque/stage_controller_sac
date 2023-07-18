@@ -1,0 +1,8 @@
+state_dimension: 1083 # Lidar 1081 + Distance + 
+action_dimension: 2
+learning_rate: 0.001
+gamma: 0.99
+alpha: 0.2
+batch_size: 64
+num_episodes: 1000
+max_steps: 1000
