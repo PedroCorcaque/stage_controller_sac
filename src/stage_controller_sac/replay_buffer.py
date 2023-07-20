@@ -11,10 +11,11 @@ class ReplayBuffer():
 
     def push(self, state, action, reward, next_state, done):
         transition = (state, action, reward, next_state, done)
-        if len(self.memory) < self.capacity:
-            self.memory.append(None)
-        self.memory[self.position] = transition
-        self.position = (self.position + 1) % self.capacity
+        self.memory.append(transition)
+        if len(self.memory) > self.capacity:
+            self.memory.pop(0)
+        # self.memory[self.position] = transition
+        # self.position = (self.position + 1) % self.capacity
 
     def sample(self, batch_size):
         batch = random.sample(self.memory, batch_size)

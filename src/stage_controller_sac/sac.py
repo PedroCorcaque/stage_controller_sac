@@ -2,10 +2,14 @@
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
+import torch.distributed as dist
+import torch.nn.parallel as parallel
+from torch.nn.parallel import DistributedDataParallel
 
 from torch.distributions import Normal
 
 import numpy as np
+import random
 
 from stage_controller_sac.policy_network import PolicyNetwork
 from stage_controller_sac.replay_buffer import ReplayBuffer
@@ -33,18 +37,31 @@ class SAC():
         self.target_entropy = -action_dim
         self.log_alpha = torch.tensor(np.log(alpha)).to(self.device)
         self.gamma = gamma
-        self.alpha = alpha #self.log_alpha.exp()
+        self.alpha = self.log_alpha.exp()
         self.optimizer_policy = optim.Adam(self.policy.parameters(), lr=learning_rate)
         self.optimizer_Q1 = optim.Adam(self.Q1.parameters(), lr=learning_rate)
         self.optimizer_Q2 = optim.Adam(self.Q2.parameters(), lr=learning_rate)
 
-    def select_action(self, state):
+    def epsilon_decay(self, decay, i):
+        eps = 0.05 + (0.9 - 0.05) * np.exp(-float(i) / decay)
+        return eps
+
+    def select_action(self, state, step):
         """A method to select a action."""
         state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-        with torch.no_grad():
-            action = self.policy(state)
-        action = action.squeeze().cpu().numpy()
-        return action
+        epsilon = self.epsilon_decay(decay=1000, i=step)
+        if np.random.random() > epsilon:
+            with torch.no_grad():
+                action = self.policy(state)
+                action = action.squeeze().cpu().numpy()
+                return action
+        return [random.uniform(-2.35, 2.35),
+                random.uniform(-0.1, 0.5)]
+
+        # with torch.no_grad():
+        #     action = self.policy(state)
+        # action = action.squeeze().cpu().numpy()
+        # return action
 
     def update(self, replay_buffer, batch_size):
         """A method to update the current state."""
@@ -66,8 +83,8 @@ class SAC():
         Q1 = self.Q1(states, actions)
         Q2 = self.Q2(states, actions)
 
-        Q1_loss = F.mse_loss(Q1, Q_target)
-        Q2_loss = F.mse_loss(Q2, Q_target)
+        Q1_loss = F.mse_loss(Q1[:, 0], Q_target[:, 0])
+        Q2_loss = F.mse_loss(Q2[:, 0], Q_target[:, 0])
         Q_loss = Q1_loss + Q2_loss
 
         self.optimizer_Q1.zero_grad()
@@ -117,8 +134,8 @@ class SAC():
             state = env.reset()
             episode_reward = 0
 
-            for _ in range(max_steps):
-                action = self.select_action(state)
+            for step in range(max_steps):
+                action = self.select_action(state, episode)
                 next_state, reward, done, _ = env.step(action)
                 replay_buffer.push(state, action, reward, next_state, done)
 
@@ -133,6 +150,44 @@ class SAC():
 
             total_rewards.append(episode_reward)
             avg_reward = np.mean(total_rewards[-100:])
-            print(f"Episode {episode + 1}/{num_episodes} | \
-                  Episode Reward: {episode_reward:.2f} | \
-                    Avg Reward: {avg_reward:.2f}")
+            print(f"Episode {episode + 1}/{num_episodes} | Episode Reward: {episode_reward:.2f} | Avg Reward: {avg_reward:.2f}", end=" | ")
+            
+    def train_sac_parallel(self, env, num_episodes, max_steps, batch_size):
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
+        
+        # Configuração do treinamento distribuído
+        torch.manual_seed(1234)
+        torch.cuda.manual_seed(1234)
+        torch.cuda.set_device(rank)
+        dist.init_process_group(backend="nccl", init_method="tcp://localhost:23456", world_size=world_size, rank=rank)
+        
+        self.policy = DistributedDataParallel(self.policy)
+        self.optimizer_policy = DistributedDataParallel(self.optimizer_policy)
+        
+        replay_buffer = ReplayBuffer(capacity=100000)
+        
+        total_rewards = []
+        
+        for episode in range(num_episodes):
+            state = env.reset()
+            episode_reward = 0
+
+            for _ in range(max_steps):
+                action = self.select_action(state)
+                next_state, reward, done, _ = env.step(action)
+                replay_buffer.push(state, action, reward, next_state, done)
+                
+                if len(replay_buffer) >= batch_size:
+                    self.update(replay_buffer, batch_size)
+                
+                state = next_state
+                episode_reward += reward
+                
+                if done:
+                    break
+            total_rewards.append(episode_reward)
+            avg_reward = np.mean(total_rewards[-100:])
+            print(f"Episode {episode + 1}/{num_episodes} | Episode Reward: {episode_reward:.2f} | Avg Reward: {avg_reward:.2f}")
+
+        dist.destroy_process_group()

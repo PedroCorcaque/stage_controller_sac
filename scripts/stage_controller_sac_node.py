@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import rospy
 
+import torch.distributed as dist
+
 import gym
-import gym_stage
+from stage_controller_sac.env import StageEnv
 from stage_controller_sac.sac import SAC
 
 class StageControllerSAC():
@@ -43,17 +45,31 @@ class StageControllerSAC():
                        self.gamma,
                        self.alpha)
 
-    def start(self):
+    def start(self, parallel=False):
         """Start method to train the SAC."""
-        self.sac.train(env=self.env,
-                       num_episodes=self.num_episodes,
-                       max_steps=self.max_steps,
-                       batch_size=self.batch_size)
+        if parallel:
+            dist.init_process_group(backend="nccl")
+            world_size = dist.get_world_size()
+            rank = dist.get_rank()
+
+            if world_size > 1:
+                self.batch_size = self.batch_size // world_size
+
+            self.sac.train_sac_parallel(env=self.env,
+                        num_episodes=self.num_episodes,
+                        max_steps=self.max_steps,
+                        batch_size=self.batch_size)
+
+        else:
+            self.sac.train(env=self.env,
+                        num_episodes=self.num_episodes,
+                        max_steps=self.max_steps,
+                        batch_size=self.batch_size)
 
 if __name__ == "__main__":
     rospy.init_node("stage_controller_sac_node")
-    goals = [[0.0, 5.5], [-2,2], [-4, 4], [1.5, 6], [3.5,2.5], [3,-1], [-3, -1], [4, 4], [-2, 3]]
-    env = gym.make("Stage-v0", env_stage=1, continuous=True, goal_list=goals)
+    goals = [[0.0, 5.5], [-2, 2], [-4, 4], [1.5, 6], [3.5, 2.5], [3,-1], [4, 4], [-2, 3]]
+    env = gym.make("Stage-v1", goal_list=goals)
 
     stage_controller_sac = StageControllerSAC(env, goals)
-    stage_controller_sac.start()
+    stage_controller_sac.start(parallel=False)

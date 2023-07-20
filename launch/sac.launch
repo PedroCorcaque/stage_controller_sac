@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <launch>
-    <node name="stageros" pkg="stage_ros" type="stageros" args="$(find stage_controller)/world/create_hokuyo.world"/>
+    <node name="stageros" pkg="stage_ros" type="stageros" args="$(find stage_controller_sac)/world/create_hokuyo.world"/>
     <node name="stage_controller_sac_node" pkg="stage_controller_sac" type="stage_controller_sac_node.py" output="screen">
         <rosparam command="load" file="$(find stage_controller_sac)/config/sac.yaml"/>
     </node>
