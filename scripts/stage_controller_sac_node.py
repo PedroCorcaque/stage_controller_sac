@@ -36,6 +36,7 @@ class StageControllerSAC():
         self.batch_size = rospy.get_param("~batch_size")
         self.num_episodes = rospy.get_param("~num_episodes")
         self.max_steps = rospy.get_param("~max_steps")
+        self.hidden_layer = rospy.get_param("~hidden_layer")
 
     def _start_sac(self):
         """A internal method to initialize the SAC object."""
@@ -43,7 +44,8 @@ class StageControllerSAC():
                        self.action_dimension,
                        self.learning_rate,
                        self.gamma,
-                       self.alpha)
+                       self.alpha,
+                       self.hidden_layer)
 
     def start(self, parallel=False):
         """Start method to train the SAC."""
@@ -68,7 +70,7 @@ class StageControllerSAC():
 
 if __name__ == "__main__":
     rospy.init_node("stage_controller_sac_node")
-    goals = [[0.0, 5.5], [-2, 2], [-4, 4], [1.5, 6], [3.5, 2.5], [3,-1], [4, 4], [-2, 3]]
+    goals = [[0.0, 5.5], [-2, 2], [-4, 4], [1.5, 6], [3.5, 2.5], [3,-1], [4, 4], [-3, -1]]
     env = gym.make("Stage-v1", goal_list=goals)
 
     stage_controller_sac = StageControllerSAC(env, goals)

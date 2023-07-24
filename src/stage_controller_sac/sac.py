@@ -9,32 +9,47 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.distributions import Normal
 
 import numpy as np
-import random
+import os
+import time
+import pickle
+import rospkg
 
 from stage_controller_sac.policy_network import PolicyNetwork
 from stage_controller_sac.replay_buffer import ReplayBuffer
 from stage_controller_sac.q_network import QNetwork
 
+PACKAGE_DIR = rospkg.RosPack().get_path("stage_controller_sac")
+WEIGHTS_DIR = os.path.join(PACKAGE_DIR, "runs/")
+
 class SAC():
     """A object to train the SAC algorithm."""
-    def __init__(self, state_dim, action_dim, learning_rate=0.001, gamma=0.99, alpha=0.2):
+    def __init__(self, state_dim, action_dim, learning_rate=0.001, gamma=0.99, alpha=0.2, hidden_layer=128, num_episodes=1000):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.num_episodes = num_episodes
 
-        self.policy = PolicyNetwork(state_dim, action_dim).to(self.device)
-        self.target_policy = PolicyNetwork(state_dim, action_dim).to(self.device)
+        current_time = time.time()
+        self.policy_name = os.path.join(WEIGHTS_DIR, f"policy_model_{current_time}.pt")
+        self.target_policy_name = os.path.join(WEIGHTS_DIR, f"target_policy_model_{current_time}.pt")
+        self.memory_name = os.path.join(WEIGHTS_DIR, f"replay_memory_{current_time}.pt")
+
+        self.policy = PolicyNetwork(self.state_dim, self.action_dim, hidden_size=hidden_layer).to(self.device)
+        self.target_policy = PolicyNetwork(self.state_dim, self.action_dim, hidden_size=hidden_layer).to(self.device)
         self.target_policy.load_state_dict(self.policy.state_dict())
         self.target_policy.eval()
 
-        self.Q1 = QNetwork(state_dim, action_dim).to(self.device)
-        self.Q2 = QNetwork(state_dim, action_dim).to(self.device)
-        self.target_Q1 = QNetwork(state_dim, action_dim).to(self.device)
-        self.target_Q2 = QNetwork(state_dim, action_dim).to(self.device)
+        self.Q1 = QNetwork(self.state_dim, self.action_dim, hidden_size=hidden_layer).to(self.device)
+        self.Q2 = QNetwork(self.state_dim, self.action_dim, hidden_size=hidden_layer).to(self.device)
+        self.target_Q1 = QNetwork(self.state_dim, self.action_dim, hidden_size=hidden_layer).to(self.device)
+        self.target_Q2 = QNetwork(self.state_dim, self.action_dim, hidden_size=hidden_layer).to(self.device)
         self.target_Q1.load_state_dict(self.Q1.state_dict())
         self.target_Q2.load_state_dict(self.Q2.state_dict())
         self.target_Q1.eval()
         self.target_Q2.eval()
 
-        self.target_entropy = -action_dim
+        self.initial_target_entropy = -self.action_dim * 0.5
+        self.target_entropy = self.initial_target_entropy
         self.log_alpha = torch.tensor(np.log(alpha)).to(self.device)
         self.gamma = gamma
         self.alpha = self.log_alpha.exp()
@@ -42,28 +57,15 @@ class SAC():
         self.optimizer_Q1 = optim.Adam(self.Q1.parameters(), lr=learning_rate)
         self.optimizer_Q2 = optim.Adam(self.Q2.parameters(), lr=learning_rate)
 
-    def epsilon_decay(self, decay, i):
-        eps = 0.05 + (0.9 - 0.05) * np.exp(-float(i) / decay)
-        return eps
-
-    def select_action(self, state, step):
+    def select_action(self, state):
         """A method to select a action."""
         state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-        epsilon = self.epsilon_decay(decay=1000, i=step)
-        if np.random.random() > epsilon:
-            with torch.no_grad():
-                action = self.policy(state)
-                action = action.squeeze().cpu().numpy()
-                return action
-        return [random.uniform(-2.35, 2.35),
-                random.uniform(-0.1, 0.5)]
+        with torch.no_grad():
+            action = self.policy(state)
+        action = action.squeeze().cpu().numpy()
+        return action
 
-        # with torch.no_grad():
-        #     action = self.policy(state)
-        # action = action.squeeze().cpu().numpy()
-        # return action
-
-    def update(self, replay_buffer, batch_size):
+    def update(self, replay_buffer, batch_size, episode):
         """A method to update the current state."""
         states, actions, rewards, next_states, dones = replay_buffer.sample(batch_size)
 
@@ -77,14 +79,13 @@ class SAC():
             next_actions, next_log_probs = self.sample_action(next_states)
             next_Q1 = self.target_Q1(next_states, next_actions)
             next_Q2 = self.target_Q2(next_states, next_actions)
-            next_Q = torch.min(next_Q1, next_Q2) - self.alpha * next_log_probs
-            Q_target = rewards + self.gamma * (1 - dones) * next_Q
+            next_Q = torch.minimum(next_Q1, next_Q2) - self.alpha * next_log_probs
+            Q_target = rewards + self.gamma * (1 - dones) * next_Q # [64, 2]
 
-        Q1 = self.Q1(states, actions)
-        Q2 = self.Q2(states, actions)
-
-        Q1_loss = F.mse_loss(Q1[:, 0], Q_target[:, 0])
-        Q2_loss = F.mse_loss(Q2[:, 0], Q_target[:, 0])
+        Q1 = self.Q1(states, actions) # [64, 1]
+        Q2 = self.Q2(states, actions) # [64, 1]
+        Q1_loss = F.mse_loss(Q1, Q_target)
+        Q2_loss = F.mse_loss(Q2, Q_target)
         Q_loss = Q1_loss + Q2_loss
 
         self.optimizer_Q1.zero_grad()
@@ -106,6 +107,13 @@ class SAC():
 
         self.update_target_networks()
 
+        with torch.no_grad():
+            target_entropy_schedule = lambda episode: max(-self.action_dim, self.initial_target_entropy * (1 - episode / self.num_episodes))
+            target_entropy = target_entropy_schedule(episode)
+            _, new_log_probs = self.sample_action(states)
+            entropies = -new_log_probs.mean()
+            self.alpha = self.alpha + target_entropy * entropies
+
     def sample_action(self, state):
         mean = self.policy(state)
         log_std = torch.zeros_like(mean).to(self.device)
@@ -113,6 +121,7 @@ class SAC():
         dist = Normal(mean, std)
         action = dist.sample()
         log_prob = dist.log_prob(action)
+        log_prob = log_prob.sum(1, keepdim=True)
         action = torch.tanh(action)
         return action, log_prob
 
@@ -127,67 +136,33 @@ class SAC():
 
     def train(self, env, num_episodes, max_steps, batch_size):
         """A method to train the SAC."""
-        replay_buffer = ReplayBuffer(capacity=100000)
+        replay_buffer = ReplayBuffer(capacity=10000000)
         total_rewards = []
 
         for episode in range(num_episodes):
-            state = env.reset()
-            episode_reward = 0
-
-            for step in range(max_steps):
-                action = self.select_action(state, episode)
-                next_state, reward, done, _ = env.step(action)
-                replay_buffer.push(state, action, reward, next_state, done)
-
-                if len(replay_buffer) >= batch_size:
-                    self.update(replay_buffer, batch_size)
-
-                state = next_state
-                episode_reward += reward
-
-                if done:
-                    break
-
-            total_rewards.append(episode_reward)
-            avg_reward = np.mean(total_rewards[-100:])
-            print(f"Episode {episode + 1}/{num_episodes} | Episode Reward: {episode_reward:.2f} | Avg Reward: {avg_reward:.2f}", end=" | ")
-            
-    def train_sac_parallel(self, env, num_episodes, max_steps, batch_size):
-        world_size = dist.get_world_size()
-        rank = dist.get_rank()
-        
-        # Configuração do treinamento distribuído
-        torch.manual_seed(1234)
-        torch.cuda.manual_seed(1234)
-        torch.cuda.set_device(rank)
-        dist.init_process_group(backend="nccl", init_method="tcp://localhost:23456", world_size=world_size, rank=rank)
-        
-        self.policy = DistributedDataParallel(self.policy)
-        self.optimizer_policy = DistributedDataParallel(self.optimizer_policy)
-        
-        replay_buffer = ReplayBuffer(capacity=100000)
-        
-        total_rewards = []
-        
-        for episode in range(num_episodes):
-            state = env.reset()
+            state, _ = env.reset()
             episode_reward = 0
 
             for _ in range(max_steps):
                 action = self.select_action(state)
                 next_state, reward, done, _ = env.step(action)
                 replay_buffer.push(state, action, reward, next_state, done)
-                
+
                 if len(replay_buffer) >= batch_size:
-                    self.update(replay_buffer, batch_size)
-                
+                    self.update(replay_buffer, batch_size, episode)
+
                 state = next_state
                 episode_reward += reward
-                
+                print(f"Current reward: {reward}", end="\r")
                 if done:
                     break
             total_rewards.append(episode_reward)
             avg_reward = np.mean(total_rewards[-100:])
-            print(f"Episode {episode + 1}/{num_episodes} | Episode Reward: {episode_reward:.2f} | Avg Reward: {avg_reward:.2f}")
+            print(f"Episode {episode + 1}/{num_episodes} \t| Episode Reward: {episode_reward:.2f} \t| Avg Reward: {avg_reward:.2f}", end=" \t| ")
 
-        dist.destroy_process_group()
+        torch.save(self.policy.state_dict(), self.policy_name)
+        torch.save(self.target_policy.state_dict(), self.target_policy_name)
+
+        with (self.memory_name, "wb") as pkl_file:
+            pickle.dump(replay_buffer, pkl_file)
+
