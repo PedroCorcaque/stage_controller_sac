@@ -143,9 +143,9 @@ class SAC():
             state, _ = env.reset()
             episode_reward = 0
 
-            for _ in range(max_steps):
+            for step in range(max_steps):
                 action = self.select_action(state)
-                next_state, reward, done, _ = env.step(action)
+                next_state, reward, done, _ = env.step(action, step)
                 replay_buffer.push(state, action, reward, next_state, done)
 
                 if len(replay_buffer) >= batch_size:
@@ -158,7 +158,7 @@ class SAC():
                     break
             total_rewards.append(episode_reward)
             avg_reward = np.mean(total_rewards[-100:])
-            print(f"Episode {episode + 1}/{num_episodes} \t| Episode Reward: {episode_reward:.2f} \t| Avg Reward: {avg_reward:.2f}", end=" \t| ")
+            print(f"Episode {episode + 1}/{num_episodes} \t| Episode Reward: {episode_reward:.2f} \t| Avg Reward: {avg_reward:.2f}")
 
         torch.save(self.policy.state_dict(), self.policy_name)
         torch.save(self.target_policy.state_dict(), self.target_policy_name)
