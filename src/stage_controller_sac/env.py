@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import rospy
 import numpy as np
-import time
 
 import gym
 from gym import spaces
@@ -20,7 +19,7 @@ class StageEnv(gym.Env):
     @property
     def angular_velocity(self):
         return self._angular_velocity
-    
+
     @angular_velocity.setter
     def angular_velocity(self, velocity):
         self._angular_velocity = velocity
@@ -28,20 +27,19 @@ class StageEnv(gym.Env):
     @property
     def linear_velocity(self):
         return self._linear_velocity
-    
+
     @linear_velocity.setter
     def linear_velocity(self, velocity):
         self._linear_velocity = velocity
 
     def __init__(self, goal_list = None):
-        assert goal_list != None
+        assert goal_list is not None
         self.goal_list = np.asarray(goal_list)
 
         self._read_parameters()
 
         self.publisher_velocity = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
         rospy.Subscriber("/base_pose_ground_truth", Odometry, self._odometry_callback)
-        # rospy.Subscriber("/base_scan", LaserScan, self._scan_callback)
 
         self.robot_position = Pose()
         self.target_position_x = None
@@ -70,16 +68,15 @@ class StageEnv(gym.Env):
 
         self.reset_proxy = rospy.ServiceProxy('reset_positions', Empty)
 
-        # This works to a continuous space
         self.action_space = spaces.Box(low=np.array([self.min_angular, self.min_linear]),
                                        high=np.array([self.max_angular, self.max_linear]),
                                        shape=(self.action_dimension,),
                                        dtype=np.float64)
-        
-        # 0.05 and 8? None?
-        # np.full returns a complete array of args[0] length with args[1] value
-        self.observation_space = spaces.Box(low=np.full(self.state_dimension, self.min_read_scan, dtype=np.float64),
-                                            high=np.full(self.state_dimension, self.max_read_scan, dtype=np.float64))
+
+        self.observation_space = spaces.Box(low=np.full(self.state_dimension, self.min_read_scan, \
+                                                        dtype=np.float64),
+                                            high=np.full(self.state_dimension, self.max_read_scan, \
+                                                         dtype=np.float64))
 
     def _read_parameters(self):
         """Read the ros parameters."""
@@ -102,19 +99,19 @@ class StageEnv(gym.Env):
         """Get the distance between the robot and the target."""
         return np.sqrt((self.target_position_x - self.robot_position.x)**2 + \
                        (self.target_position_y - self.robot_position.y)**2)
-    
+
     def _get_state(self, data):
         """Get current state of the environment."""
         scan_range = []
         done = False
 
-        for i in range(len(data)):
-            if data[i] == float("Inf"):
+        for _, value in enumerate(data):
+            if value == float("Inf"):
                 scan_range.append(self.max_read_scan)
-            elif np.isnan(data[i]):
+            elif np.isnan(value):
                 scan_range.append(self.min_read_scan)
             else:
-                scan_range.append(data[i])
+                scan_range.append(value)
 
         if min(scan_range) < self.collision_distance:
             done = True
@@ -151,10 +148,10 @@ class StageEnv(gym.Env):
             reward = -np.log(self._get_target_distance() + EPS)
 
         return reward
-    
+
     def _get_walked_distance(self):
         """Get the distance of the initial to final position."""
-        return np.sqrt((self.robot_position.x - self.start_position_x)**2 + 
+        return np.sqrt((self.robot_position.x - self.start_position_x)**2 +
                        (self.robot_position.y - self.start_position_y)**2)
 
     def _publish_velocity(self, msg):
@@ -191,7 +188,7 @@ class StageEnv(gym.Env):
                 data = rospy.wait_for_message('/base_scan', LaserScan, timeout=15)
                 data = data.ranges
             except:
-                pass
+                continue
 
         state, done = self._get_state(data)
         reward = self._set_reward(done)
@@ -220,7 +217,7 @@ class StageEnv(gym.Env):
                 data = rospy.wait_for_message('/base_scan', LaserScan, timeout=15)
                 data = data.ranges
             except:
-                pass
+                continue
 
         self.target_distance = self._get_target_distance()
         state, _ = self._get_state(data)

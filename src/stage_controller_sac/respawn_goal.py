@@ -3,7 +3,7 @@ import numpy as np
 from geometry_msgs.msg import Pose
 
 class Respawn():
-    """"""
+
     def __init__(self):
         self.target_position = Pose()
         self.target_x_list = None
@@ -33,8 +33,6 @@ class Respawn():
 
     def get_position(self, position_check=False):
         if position_check:
-            # self.index = (self.last_index+1) % self.len_target_list
-            # self.last_index = self.index
             random_index = np.random.randint(0, high=self.len_target_list)
             self.target_position.position.x = self.target_x_list[random_index]
             self.target_position.position.y = self.target_y_list[random_index]

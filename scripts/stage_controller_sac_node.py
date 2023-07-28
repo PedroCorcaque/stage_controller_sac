@@ -5,7 +5,7 @@ import torch.distributed as dist
 
 import gym
 from stage_controller_sac.env import StageEnv
-from stage_controller_sac.sac import SAC
+from sac.sac import SAC
 
 class StageControllerSAC():
     """The StageControllerSAC use a SAC to move the robot to target position."""
